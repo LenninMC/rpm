@@ -1,0 +1,331 @@
+let rpmChart = null;
+let rpmHistory = [];
+let referenciaHistory = [];
+let isUpdating = false;
+
+// Elementos del DOM para el semáforo
+const luzRoja = document.getElementById('luzRoja');
+const luzAmarilla = document.getElementById('luzAmarilla');
+const luzVerde = document.getElementById('luzVerde');
+const estadoSemaforo = document.getElementById('estado-semaforo');
+const referenciaActualSpan = document.getElementById('referenciaActual');
+const errorValorSpan = document.getElementById('errorValor');
+const errorPorcentajeSpan = document.getElementById('errorPorcentaje');
+const errorAbsolutoSpan = document.getElementById('errorAbsoluto');
+const rpmReferenciaInput = document.getElementById('rpmReferenciaInput');
+
+function getCommandIcon(cmd) {
+    const icons = {
+        'A': '▶',
+        'R': '◀',
+        'P': '■',
+        'Z': '↺'
+    };
+    return icons[cmd] || '●';
+}
+
+function getCommandName(cmd) {
+    const names = {
+        'A': 'Adelante',
+        'R': 'Reversa',
+        'P': 'Paro',
+        'Z': 'Reset'
+    };
+    return names[cmd] || cmd;
+}
+
+async function setReferencia() {
+    const nuevaReferencia = parseFloat(rpmReferenciaInput.value);
+    
+    if (isNaN(nuevaReferencia) || nuevaReferencia < 0) {
+        addMonitorMessage('Error: Valor de referencia inválido', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch("/api/referencia", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rpm_referencia: nuevaReferencia })
+        });
+        
+        const data = await response.json();
+        
+        if (data.ok) {
+            addMonitorMessage(`Referencia actualizada a ${data.rpm_referencia} RPM`, 'success');
+            referenciaActualSpan.textContent = data.rpm_referencia;
+        } else {
+            addMonitorMessage(`Error: ${data.error}`, 'error');
+        }
+    } catch (error) {
+        addMonitorMessage('Error de conexión al actualizar referencia', 'error');
+    }
+}
+
+function actualizarSemaforo(estado) {
+    // Apagar todas las luces
+    luzRoja.classList.remove('active');
+    luzAmarilla.classList.remove('active');
+    luzVerde.classList.remove('active');
+    
+    // Quitar clases de estado
+    estadoSemaforo.classList.remove('status-verde', 'status-amarillo', 'status-rojo');
+    
+    // Encender la luz correspondiente
+    switch(estado) {
+        case 'verde':
+            luzVerde.classList.add('active');
+            estadoSemaforo.textContent = '🟢 VERDE - Error pequeño (<5%)';
+            estadoSemaforo.classList.add('status-verde');
+            break;
+        case 'amarillo':
+            luzAmarilla.classList.add('active');
+            estadoSemaforo.textContent = '🟡 AMARILLO - Error medio (5-15%)';
+            estadoSemaforo.classList.add('status-amarillo');
+            break;
+        case 'rojo':
+            luzRoja.classList.add('active');
+            estadoSemaforo.textContent = '🔴 ROJO - Error grande (>15%)';
+            estadoSemaforo.classList.add('status-rojo');
+            break;
+    }
+}
+
+async function enviarComando(cmd) {
+    const btn = event?.target?.closest('.ctrl-btn');
+    if (btn) {
+        btn.style.transform = 'scale(0.95)';
+        setTimeout(() => {
+            if (btn) btn.style.transform = '';
+        }, 150);
+    }
+    
+    try {
+        const response = await fetch("/control", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ comando: cmd })
+        });
+        
+        const data = await response.json();
+        
+        if (data.ok) {
+            addMonitorMessage(`Comando ${getCommandName(cmd)} enviado`, 'success');
+        } else {
+            addMonitorMessage(`Error: ${data.error}`, 'error');
+        }
+    } catch (error) {
+        addMonitorMessage('Error de conexión', 'error');
+    }
+}
+
+function addMonitorMessage(message, type = 'info') {
+    const monitor = document.getElementById("monitor");
+    if (!monitor) return;
+    
+    const timestamp = new Date().toLocaleTimeString();
+    const colors = {
+        success: '#10b981',
+        error: '#ef4444',
+        info: '#06b6d4'
+    };
+    
+    const line = document.createElement('div');
+    line.className = 'monitor-line';
+    line.style.color = colors[type];
+    line.innerHTML = `<span style="color:#6b7280">[${timestamp}]</span> ${message}`;
+    
+    monitor.appendChild(line);
+    line.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    
+    // Limitar líneas
+    while (monitor.children.length > 100) {
+        monitor.removeChild(monitor.firstChild);
+    }
+}
+
+function initChart() {
+    const canvas = document.getElementById('rpmChart');
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    
+    if (rpmChart) rpmChart.destroy();
+    
+    rpmChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label: 'RPM Actual',
+                    data: [],
+                    borderColor: '#06b6d4',
+                    backgroundColor: 'rgba(6, 182, 212, 0.05)',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 6,
+                    pointHoverBackgroundColor: '#06b6d4',
+                    tension: 0.4,
+                    fill: true
+                },
+                {
+                    label: 'RPM Referencia',
+                    data: [],
+                    borderColor: '#8b5cf6',
+                    backgroundColor: 'rgba(139, 92, 246, 0.05)',
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    pointHoverRadius: 6,
+                    pointHoverBackgroundColor: '#8b5cf6',
+                    tension: 0.4,
+                    fill: false
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                    labels: { color: '#9ca3af', usePointStyle: true }
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false,
+                    backgroundColor: '#1f2937',
+                    titleColor: '#f3f4f6',
+                    bodyColor: '#9ca3af',
+                    borderColor: '#06b6d4',
+                    borderWidth: 1,
+                    callbacks: {
+                        label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} RPM`
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { color: '#374151', display: false },
+                    ticks: { color: '#9ca3af', maxTicksLimit: 8 }
+                },
+                y: {
+                    grid: { color: '#374151' },
+                    ticks: { color: '#9ca3af', callback: (v) => `${v} RPM` },
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Revoluciones por Minuto (RPM)',
+                        color: '#9ca3af',
+                        font: { size: 11 }
+                    }
+                }
+            },
+            interaction: { mode: 'index', intersect: false }
+        }
+    });
+}
+
+function updateChart(rpmActual, rpmReferencia) {
+    if (!rpmChart) return;
+    
+    rpmHistory.push(rpmActual);
+    referenciaHistory.push(rpmReferencia);
+    
+    if (rpmHistory.length > 50) {
+        rpmHistory.shift();
+        referenciaHistory.shift();
+    }
+    
+    const labels = rpmHistory.map((_, i) => i);
+    rpmChart.data.labels = labels;
+    rpmChart.data.datasets[0].data = [...rpmHistory];
+    rpmChart.data.datasets[1].data = [...referenciaHistory];
+    rpmChart.update('none');
+}
+
+async function actualizarDatos() {
+    if (isUpdating) return;
+    isUpdating = true;
+    
+    try {
+        const response = await fetch("/api/data");
+        const data = await response.json();
+        
+        if (data.ok) {
+            // Actualizar KPI
+            updateKPI('cmd', data.cmd || 'P', getCommandIcon(data.cmd));
+            updateKPI('pulsos', (data.pulsos || 0).toLocaleString());
+            updateKPI('vueltas', (data.vueltas || 0).toFixed(4));
+            updateKPI('rpm', (data.rpm || 0).toFixed(1), '', ' RPM');
+            
+            // Actualizar referencia y error
+            const rpmActual = data.rpm || 0;
+            const rpmReferencia = data.rpm_referencia || 1000;
+            const errorAbs = data.error_abs || 0;
+            const errorPorcent = data.error_porcentual || 0;
+            const semaforoEstado = data.semaforo || 'verde';
+            
+            referenciaActualSpan.textContent = rpmReferencia;
+            errorValorSpan.textContent = Math.round(errorAbs);
+            errorPorcentajeSpan.textContent = `${errorPorcent.toFixed(2)}%`;
+            errorAbsolutoSpan.textContent = `|${rpmReferencia} - ${Math.round(rpmActual)}| = ${Math.round(errorAbs)} RPM`;
+            
+            // Actualizar input si es necesario
+            if (rpmReferenciaInput && !rpmReferenciaInput.disabled) {
+                rpmReferenciaInput.value = rpmReferencia;
+            }
+            
+            // Actualizar semáforo
+            actualizarSemaforo(semaforoEstado);
+            
+            // Actualizar gráfico
+            updateChart(rpmActual, rpmReferencia);
+            
+            // Cambiar color según RPM
+            const rpmElement = document.getElementById('rpm-value');
+            if (rpmElement) {
+                if (rpmActual > 500) rpmElement.style.color = '#ef4444';
+                else if (rpmActual > 200) rpmElement.style.color = '#f59e0b';
+                else if (rpmActual > 0) rpmElement.style.color = '#10b981';
+                else rpmElement.style.color = '#f3f4f6';
+            }
+        }
+    } catch (error) {
+        console.error('Error:', error);
+    } finally {
+        isUpdating = false;
+    }
+}
+
+function updateKPI(id, value, prefix = '', suffix = '') {
+    const element = document.getElementById(`${id}-value`);
+    if (!element) return;
+    
+    const oldValue = element.innerText;
+    if (oldValue !== value) {
+        element.style.transform = 'scale(1.05)';
+        element.innerText = `${prefix}${value}${suffix}`;
+        setTimeout(() => {
+            if (element) element.style.transform = '';
+        }, 200);
+    } else {
+        element.innerText = `${prefix}${value}${suffix}`;
+    }
+}
+
+// Inicializar
+document.addEventListener('DOMContentLoaded', () => {
+    initChart();
+    actualizarDatos();
+    setInterval(actualizarDatos, 300);
+});
+
+// Redimensionar gráfico
+let resizeTimeout;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => rpmChart?.resize(), 250);
+});
